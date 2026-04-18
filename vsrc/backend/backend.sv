@@ -325,7 +325,7 @@ module backend #(
         .ibuffer_inst1_out         (ibuffer_inst1_out),
         .ibuffer_pc1_out           (ibuffer_pc1_out),
         .ibuffer_instr1_ready      (ibuffer_instr1_ready),
-        .ibuffer_instr0_ready         (ibuffer_instr_ready),
+        .ibuffer_instr0_ready         (ibuffer_instr0_ready),
         .flush_valid                 (flush_valid),
         .iru2idu_instr0_ready         (iru2idu_instr0_ready),
         .idu2iru_instr0_valid         (idu2iru_instr0_valid),
