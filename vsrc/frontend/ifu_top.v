@@ -1,71 +1,87 @@
+// ============================================================
+// ifu_top.v — 前端顶层（2-wide 改造版）
+// ============================================================
+// [2-wide] 改动说明：
+//   原来输出单条指令给 backend（ibuffer_instr_valid/ready + inst/pc）
+//   改为同时输出 2 条指令给 backend 的双 decoder
+//
+// 改动内容：
+//   1. 端口从单路改为双路（instr0_* 和 instr1_*）
+//   2. ibuffer 例化改为新的双路接口
+//   3. pc_ctrl, instr_admin, bpu 不变
+// ============================================================
+
 module ifu_top (
     input wire clock,
     input wire reset_n,
 
     // Inputs for PC control
-    input  wire [`PC_RANGE] boot_addr,         // 48-bit boot address
-    input  wire             interrupt_valid,   // Interrupt valid signal
-    input  wire [`PC_RANGE] interrupt_addr,    // 48-bit interrupt address
-    input  wire             redirect_valid,    // Branch address valid signal
-    input  wire [`PC_RANGE] redirect_target,   // 48-bit branch address
+    input  wire [`PC_RANGE] boot_addr,
+    input  wire             interrupt_valid,
+    input  wire [`PC_RANGE] interrupt_addr,
+    input  wire             redirect_valid,
+    input  wire [`PC_RANGE] redirect_target,
     output wire             pc_index_valid,
-    input  wire             pc_index_ready,    // Signal indicating DDR operation is complete
-    input  wire             pc_operation_done, // Signal indicating PC operation is done
+    input  wire             pc_index_ready,
+    input  wire             pc_operation_done,
 
     // Inputs for instruction buffer
-    input wire [`ICACHE_FETCHWIDTH128_RANGE] pc_read_inst,        // 128-bit input data for instructions
-    input wire                               ibuffer_instr_ready, // External read enable signal for FIFO
-    //input wire        clear_ibuffer_ext, // External clear signal for ibuffer
+    input wire [`ICACHE_FETCHWIDTH128_RANGE] pc_read_inst,
 
-    // Outputs from ibuffer
-    output wire        ibuffer_instr_valid,
-    output wire        ibuffer_predicttaken_out,
-    output wire [31:0] ibuffer_predicttarget_out,
-    output wire [31:0] ibuffer_inst_out,
-    output wire [63:0] ibuffer_pc_out,
-    output wire        fifo_empty,                 // Signal indicating if the FIFO is empty
+    // --- [2-wide] 双路输出给 backend（原先是单路） ---
+    // instr0: 第 1 条指令
+    input  wire        ibuffer_instr0_ready,
+    output wire        ibuffer_instr0_valid,
+    output wire        ibuffer_predicttaken0_out,
+    output wire [31:0] ibuffer_predicttarget0_out,
+    output wire [31:0] ibuffer_inst0_out,
+    output wire [63:0] ibuffer_pc0_out,
+
+    // instr1: 第 2 条指令
+    input  wire        ibuffer_instr1_ready,
+    output wire        ibuffer_instr1_valid,
+    output wire        ibuffer_predicttaken1_out,
+    output wire [31:0] ibuffer_predicttarget1_out,
+    output wire [31:0] ibuffer_inst1_out,
+    output wire [63:0] ibuffer_pc1_out,
+
+    output wire        fifo_empty,
 
     // Outputs from pc_ctrl
-    output wire [63:0] pc_index,  // Selected bits [21:3] of the PC for DDR index
+    output wire [63:0] pc_index,
 
     input wire       backend_stall,
+
     // BHT Write Interface
-    input wire       bht_write_enable,          // Write enable for BHT
-    input wire [8:0] bht_write_index,           // Set index for BHT write operation
-    input wire [1:0] bht_write_counter_select,  // Counter select within the BHT set (0 to 3)
-    input wire       bht_write_inc,             // Increment signal for BHT counter
-    input wire       bht_write_dec,             // Decrement signal for BHT counter
-    input wire       bht_valid_in,              // Valid bit for BHT write operation
+    input wire       bht_write_enable,
+    input wire [8:0] bht_write_index,
+    input wire [1:0] bht_write_counter_select,
+    input wire       bht_write_inc,
+    input wire       bht_write_dec,
+    input wire       bht_valid_in,
 
     // BTB Write Interface
     input wire         btb_ce,
-    input wire         btb_we,           // Write enable for BTB
+    input wire         btb_we,
     input wire [128:0] btb_wmask,
-    input wire [  8:0] btb_write_index,  // Set index for BTB write operation
+    input wire [  8:0] btb_write_index,
     input wire [128:0] btb_din,
     input  wire end_of_program
-
-
 );
 
-    // Internal signals connecting ibuffer and pc_ctrl
-    wire                               fetch_inst;  // Pulse from ibuffer to trigger fetch in pc_ctrl
-    wire                               can_fetch_inst;  // Signal from pc_ctrl to allow fetch in ibuffer
-
-    wire [                       63:0] pc;
+    // Internal signals
+    wire fetch_inst;
+    wire can_fetch_inst;
+    wire [63:0] pc;
 
     /* --------------------------- bpu related signals -------------------------- */
-
-    // BHT Read Interface
     wire                               pc_req_handshake;
-    wire [                        7:0] bht_read_data;  // 8-bit data from BHT (4 counters)
-    wire                               bht_valid;  // BHT valid bit
-    wire [                       31:0] bht_read_miss_count;  // BHT read miss count
-
-    // Outputs from BTB
-    wire [                      127:0] btb_targets;  // Four 32-bit branch target addresses
-    wire                               btb_valid;  // BTB valid bit
-    wire [                       31:0] btb_read_miss_count;  // BTB read miss count
+    wire [                        7:0] bht_read_data;
+    wire                               bht_valid;
+    wire [                       31:0] bht_read_miss_count;
+    wire [                      127:0] btb_targets;
+    wire                               btb_valid;
+    wire [                       31:0] btb_read_miss_count;
 
     /* ----------------------------- admin output signal ---------------------------- */
     wire [`ICACHE_FETCHWIDTH128_RANGE] admin2ib_instr;
@@ -75,36 +91,44 @@ module ifu_top (
     wire                               admin2pcctrl_predicttaken;
     wire [                       31:0] admin2pcctrl_predicttarget;
 
-
-    // Instantiate the ibuffer module
+    // --- [2-wide] ibuffer 例化（双路输出） ---
     ibuffer ibuffer_inst (
-        .clock                    (clock),
-        .reset_n                  (reset_n),
-        .pc                       (pc),
-        .pc_index_ready           (pc_index_ready),
-        .pc_operation_done        (pc_operation_done),
-        .admin2ib_instr           (admin2ib_instr),
-        .admin2ib_instr_valid     (admin2ib_instr_valid),
-        .ibuffer_instr_ready      (ibuffer_instr_ready),
-        .redirect_valid           (redirect_valid),             // OR external and internal clear signals
-        .fetch_inst               (fetch_inst),
-        .ibuffer_predicttaken_out (ibuffer_predicttaken_out),
-        .ibuffer_predicttarget_out(ibuffer_predicttarget_out),
-        .ibuffer_instr_valid      (ibuffer_instr_valid),
-        .ibuffer_inst_out         (ibuffer_inst_out),
-        .ibuffer_pc_out           (ibuffer_pc_out),
-        .fifo_empty               (fifo_empty),
-        .backend_stall            (backend_stall),
-        .admin2ib_predicttaken    (admin2ib_predicttaken),
-        .admin2ib_predicttarget   (admin2ib_predicttarget)
+        .clock                     (clock),
+        .reset_n                   (reset_n),
+        .pc                        (pc),
+        .pc_index_ready            (pc_index_ready),
+        .pc_operation_done         (pc_operation_done),
+        .admin2ib_instr            (admin2ib_instr),
+        .admin2ib_instr_valid      (admin2ib_instr_valid),
+        .redirect_valid            (redirect_valid),
+        .fetch_inst                (fetch_inst),
+        .backend_stall             (backend_stall),
+        .admin2ib_predicttaken     (admin2ib_predicttaken),
+        .admin2ib_predicttarget    (admin2ib_predicttarget),
 
+        // [2-wide] 双路输出（原先是单路 ibuffer_instr_valid/ready/inst_out/pc_out）
+        .ibuffer_instr0_ready      (ibuffer_instr0_ready),
+        .ibuffer_instr0_valid      (ibuffer_instr0_valid),
+        .ibuffer_predicttaken0_out (ibuffer_predicttaken0_out),
+        .ibuffer_predicttarget0_out(ibuffer_predicttarget0_out),
+        .ibuffer_inst0_out         (ibuffer_inst0_out),
+        .ibuffer_pc0_out           (ibuffer_pc0_out),
+
+        .ibuffer_instr1_ready      (ibuffer_instr1_ready),
+        .ibuffer_instr1_valid      (ibuffer_instr1_valid),
+        .ibuffer_predicttaken1_out (ibuffer_predicttaken1_out),
+        .ibuffer_predicttarget1_out(ibuffer_predicttarget1_out),
+        .ibuffer_inst1_out         (ibuffer_inst1_out),
+        .ibuffer_pc1_out           (ibuffer_pc1_out),
+
+        .fifo_empty                (fifo_empty)
     );
 
-
+    // instr_admin — 零改动（不涉及 2-wide）
     instr_admin u_instr_admin (
         .pc_operation_done         (pc_operation_done),
         .fetch_instr               (pc_read_inst),
-        .pc                        (pc),                         //input
+        .pc                        (pc),
         .admin2ib_instr            (admin2ib_instr),
         .admin2ib_instr_valid      (admin2ib_instr_valid),
         .bht_read_data             (bht_read_data),
@@ -117,12 +141,11 @@ module ifu_top (
         .admin2pcctrl_predicttarget(admin2pcctrl_predicttarget)
     );
 
-
-    // Instantiate the pc_ctrl module
+    // pc_ctrl — 零改动
     pc_ctrl pc_ctrl_inst (
         .clock                     (clock),
         .reset_n                   (reset_n),
-        .pc                        (pc),                          //output
+        .pc                        (pc),
         .boot_addr                 (boot_addr),
         .redirect_valid            (redirect_valid),
         .redirect_target           (redirect_target),
@@ -136,6 +159,7 @@ module ifu_top (
         .pc_req_handshake          (pc_req_handshake)
     );
 
+    // bpu — 零改动
     bpu u_bpu (
         .clock                   (clock),
         .reset_n                 (reset_n),
@@ -159,9 +183,5 @@ module ifu_top (
         .btb_valid               (btb_valid),
         .btb_read_miss_count     (btb_read_miss_count)
     );
-
-
-
-
 
 endmodule
