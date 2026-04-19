@@ -214,6 +214,9 @@ module dispatch (
     // 关键：instr1_ready 依赖 instr0_ready（保序，instr1 不能比 instr0 先走）
     // 额外约束：instr1 是 store 时必须降级，因为 SQ 每周期只能分配 1 个 slot（给 instr0）
     wire instr1_sq_ok = !iru2isu_instr1_valid || !(instr1_is_load || instr1_is_store) || !instr1_is_store;
+    // --- [2-wide] instr1 ready（保序 + 无IQ冲突 + 资源够 + SQ约束） ---
+    // 关键：instr1_ready 依赖 instr0_ready（保序，instr1 不能比 instr0 先走）
+    // 额外约束：instr1 是 store 时必须降级，因为 SQ 每周期只能分配 1 个 slot（给 instr0）
     assign iru2isu_instr1_ready = iru2isu_instr0_ready       // instr0 也能走（保序）
                                   && iru2isu_instr1_valid     // instr1 存在
                                   && no_iq_conflict           // 不去同一个 IQ
