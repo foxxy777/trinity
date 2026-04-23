@@ -192,38 +192,9 @@ module dispatch (
 
 
 
-    // --- [2-wide] instr 类型判断 ---
-    // 用于判断 instr0/instr1 去哪个 IQ（int 还是 mem）
-    // IQ 冲突检测：两条指令去同一个 IQ 时 instr1 降级
-    wire instr0_is_int = iru2isu_instr0_valid && !(instr0_is_load || instr0_is_store);
-    wire instr0_is_mem = iru2isu_instr0_valid && (instr0_is_load || instr0_is_store);
-    wire instr1_is_int = iru2isu_instr1_valid && !(instr1_is_load || instr1_is_store);
-    wire instr1_is_mem = iru2isu_instr1_valid && (instr1_is_load || instr1_is_store);
-
-    // --- [2-wide] IQ 冲突检测 ---
-    // 当两条都去 int_isq 或都去 mem_isq 时冲突，instr1 必须降级
-    // 因为 int_isq 和 mem_isq 各自只支持单路 enq（enq_instr0）
-    wire no_iq_conflict = (instr0_is_int && instr1_is_mem)
-                        || (instr0_is_mem && instr1_is_int)
-                        || !iru2isu_instr1_valid;
-
     //disp2pipe ready
-    assign iru2isu_instr0_ready = rob_can_enq && iq_can_alloc0 && iq_can_alloc1 && sq_can_alloc && ~flush_valid && (rob_state == `ROB_STATE_IDLE);
-
-    // --- [2-wide] instr1 ready（保序 + 无IQ冲突 + 资源够 + SQ约束） ---
-    // 关键：instr1_ready 依赖 instr0_ready（保序，instr1 不能比 instr0 先走）
-    // 额外约束：instr1 是 store 时必须降级，因为 SQ 每周期只能分配 1 个 slot（给 instr0）
-    wire instr1_sq_ok = !iru2isu_instr1_valid || !(instr1_is_load || instr1_is_store) || !instr1_is_store;
-    // --- [2-wide] instr1 ready（保序 + 无IQ冲突 + 资源够 + SQ约束） ---
-    // 关键：instr1_ready 依赖 instr0_ready（保序，instr1 不能比 instr0 先走）
-    // 额外约束：instr1 是 store 时必须降级，因为 SQ 每周期只能分配 1 个 slot（给 instr0）
-    assign iru2isu_instr1_ready = iru2isu_instr0_ready       // instr0 也能走（保序）
-                                  && iru2isu_instr1_valid     // instr1 存在
-                                  && no_iq_conflict           // 不去同一个 IQ
-                                  && instr1_sq_ok             // instr1 不是 store（SQ单端口限制）
-                                  && sq_can_alloc             // SQ 还有空间
-                                  && rob_can_enq              // ROB 还能入 1 条
-                                  && ~flush_valid;
+    assign iru2isu_instr0_ready       = rob_can_enq && iq_can_alloc0 && iq_can_alloc1 && sq_can_alloc && ~flush_valid && (rob_state == `ROB_STATE_IDLE);
+    assign iru2isu_instr1_ready       = 1'b0;
 
     /* --------------------- write instr0 and instr1 to rob --------------------- */
     assign disp2rob_instr0_enq_valid  = iru2isu_instr0_valid && ~flush_valid && iq_can_alloc0 && iq_can_alloc1 && sq_can_alloc;
@@ -235,8 +206,7 @@ module dispatch (
     assign disp2rob_instr0_need_to_wb = instr0_need_to_wb;
 
 
-    // --- [2-wide] instr1 的 ROB enq valid 加上 ready 条件 ---
-    assign disp2rob_instr1_enq_valid  = iru2isu_instr1_valid && iru2isu_instr1_ready && ~flush_valid && rob_can_enq;
+    assign disp2rob_instr1_enq_valid  = iru2isu_instr1_valid;
     assign disp2rob_instr1_pc         = instr1_pc;
     assign disp2rob_instr1_instr      = instr1_instr;
     assign disp2rob_instr1_lrd        = instr1_lrd;
@@ -247,9 +217,7 @@ module dispatch (
     /* ------------ write prd0 and prd1 busy bit to 1 in busy_vector ------------ */
     assign disp2bt_alloc_instr0_rd_en = instr0_need_to_wb && iru2isu_instr0_valid && ~flush_valid && sq_can_alloc && iq_can_alloc0 && iq_can_alloc1 & rob_can_enq;
     assign disp2bt_alloc_instr0_rd    = instr0_prd;
-    // --- [2-wide] 修正原始 bug + 添加 instr1 条件 ---
-    // 原始代码 bug：用了 iru2isu_instr0_valid 而非 iru2isu_instr1_ready
-    assign disp2bt_alloc_instr1_rd_en = instr1_need_to_wb && iru2isu_instr1_ready && ~flush_valid;
+    assign disp2bt_alloc_instr1_rd_en = instr1_need_to_wb && iru2isu_instr0_valid && ~flush_valid && sq_can_alloc && iq_can_alloc0 && iq_can_alloc1 & rob_can_enq;
     assign disp2bt_alloc_instr1_rd    = instr1_prd;
 
     /* ------- read instr0 and instr1 rs1 rs2 busy status from busy_vector ------ */
@@ -339,9 +307,7 @@ module dispatch (
     /* -------------------------------------------------------------------------- */
     /*                               to store queue                               */
     /* -------------------------------------------------------------------------- */
-    // --- [2-wide] SQ 只处理 instr0 的 store ---
-    // instr1 的 store 被 instr1_sq_ok 降级（SQ 每周期只有 1 个分配端口）
-    assign disp2sq_valid                    = iru2isu_instr0_valid && instr0_is_store && ~flush_valid && iq_can_alloc0 && iq_can_alloc1;
+    assign disp2sq_valid                    = iru2isu_instr0_valid & instr0_is_store & ~flush_valid && iq_can_alloc0 && iq_can_alloc1;
     assign disp2sq_robid                    = rob2disp_instr_robid;
     assign disp2sq_pc                       = instr0_pc;
 endmodule

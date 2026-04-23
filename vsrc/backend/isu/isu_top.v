@@ -350,159 +350,6 @@ module isu_top (
     wire [                  31:0] intisq_pmu_block_enq_cycle_cnt;
     wire [                  31:0] intisq_pmu_can_issue_more;
 
-
-    // ============================================================
-    // [2-wide] Step 3.4 — IQ 交叉分发 MUX
-    // ============================================================
-    // 核心思路：
-    //   int_isq 和 mem_isq 各只有 enq_instr0 单端口
-    //   当 instr0 和 instr1 去不同 IQ 时，需要 MUX 选择数据源
-    //
-    //   Case 1: instr0=int, instr1=load  → int_isq←instr0, mem_isq←instr1 (cross_to_mem)
-    //   Case 2: instr0=load, instr1=int  → mem_isq←instr0, int_isq←instr1 (cross_to_int)
-    //   Case 3: 同类型 or instr1被降级    → 各 IQ 只收 instr0 (normal)
-    // ============================================================
-
-    // --- Cross-dispatch detect ---
-    wire cross_to_int = iru2isu_instr1_valid && iru2isu_instr1_ready
-                        && !(iru2isu_instr1_is_load || iru2isu_instr1_is_store)  // instr1 is int
-                        && (iru2isu_instr0_is_load || iru2isu_instr0_is_store);  // instr0 is mem
-
-    wire cross_to_mem = iru2isu_instr1_valid && iru2isu_instr1_ready
-                        && (iru2isu_instr1_is_load || iru2isu_instr1_is_store)   // instr1 is mem (load only, store is degraded)
-                        && !(iru2isu_instr1_is_store)                              // instr1 is load (stores degraded)
-                        && !(iru2isu_instr0_is_load || iru2isu_instr0_is_store);  // instr0 is int
-
-
-    // --- [2-wide] int_isq enq data MUX ---
-    // Normal: use disp2intisq_instr0_* (instr0 data, valid when instr0 is int)
-    // Cross:  use iru2isu_instr1_* (instr1 data, valid when instr0 is mem and instr1 is int)
-    wire                          mux_intisq_enq_valid;
-    wire [             `PC_RANGE] mux_intisq_pc;
-    wire [                  31:0] mux_intisq_instr;
-    wire [           `LREG_RANGE] mux_intisq_lrs1;
-    wire [           `LREG_RANGE] mux_intisq_lrs2;
-    wire [           `LREG_RANGE] mux_intisq_lrd;
-    wire [           `PREG_RANGE] mux_intisq_prd;
-    wire [           `PREG_RANGE] mux_intisq_old_prd;
-    wire                          mux_intisq_need_to_wb;
-    wire [           `PREG_RANGE] mux_intisq_prs1;
-    wire [           `PREG_RANGE] mux_intisq_prs2;
-    wire                          mux_intisq_src1_is_reg;
-    wire                          mux_intisq_src2_is_reg;
-    wire [                  63:0] mux_intisq_imm;
-    wire [        `CX_TYPE_RANGE] mux_intisq_cx_type;
-    wire                          mux_intisq_is_unsigned;
-    wire [       `ALU_TYPE_RANGE] mux_intisq_alu_type;
-    wire [    `MULDIV_TYPE_RANGE] mux_intisq_muldiv_type;
-    wire                          mux_intisq_is_word;
-    wire                          mux_intisq_is_imm;
-    wire                          mux_intisq_is_load;
-    wire                          mux_intisq_is_store;
-    wire [                   3:0] mux_intisq_ls_size;
-    wire                          mux_intisq_predicttaken;
-    wire [             `PC_RANGE] mux_intisq_predicttarget;
-    wire [       `ROB_SIZE_LOG:0] mux_intisq_robid;
-    wire [`STOREQUEUE_SIZE_LOG:0] mux_intisq_sqid;
-    wire                          mux_intisq_src1_state;
-    wire                          mux_intisq_src2_state;
-
-    assign mux_intisq_enq_valid     = cross_to_int ? (iru2isu_instr1_valid && iru2isu_instr1_ready && ~flush_valid)
-                                                    : disp2intisq_instr0_enq_valid;
-    assign mux_intisq_pc            = cross_to_int ? iru2isu_instr1_pc            : disp2intisq_instr0_pc;
-    assign mux_intisq_instr         = cross_to_int ? iru2isu_instr1_instr         : disp2intisq_instr0_instr;
-    assign mux_intisq_lrs1          = cross_to_int ? iru2isu_instr1_lrs1          : disp2intisq_instr0_lrs1;
-    assign mux_intisq_lrs2          = cross_to_int ? iru2isu_instr1_lrs2          : disp2intisq_instr0_lrs2;
-    assign mux_intisq_lrd           = cross_to_int ? iru2isu_instr1_lrd           : disp2intisq_instr0_lrd;
-    assign mux_intisq_prd           = cross_to_int ? iru2isu_instr1_prd           : disp2intisq_instr0_prd;
-    assign mux_intisq_old_prd       = cross_to_int ? iru2isu_instr1_old_prd       : disp2intisq_instr0_old_prd;
-    assign mux_intisq_need_to_wb    = cross_to_int ? iru2isu_instr1_need_to_wb    : disp2intisq_instr0_need_to_wb;
-    assign mux_intisq_prs1          = cross_to_int ? iru2isu_instr1_prs1          : disp2intisq_instr0_prs1;
-    assign mux_intisq_prs2          = cross_to_int ? iru2isu_instr1_prs2          : disp2intisq_instr0_prs2;
-    assign mux_intisq_src1_is_reg   = cross_to_int ? iru2isu_instr1_src1_is_reg   : disp2intisq_instr0_src1_is_reg;
-    assign mux_intisq_src2_is_reg   = cross_to_int ? iru2isu_instr1_src2_is_reg   : disp2intisq_instr0_src2_is_reg;
-    assign mux_intisq_imm           = cross_to_int ? iru2isu_instr1_imm           : disp2intisq_instr0_imm;
-    assign mux_intisq_cx_type       = cross_to_int ? iru2isu_instr1_cx_type       : disp2intisq_instr0_cx_type;
-    assign mux_intisq_is_unsigned   = cross_to_int ? iru2isu_instr1_is_unsigned   : disp2intisq_instr0_is_unsigned;
-    assign mux_intisq_alu_type      = cross_to_int ? iru2isu_instr1_alu_type      : disp2intisq_instr0_alu_type;
-    assign mux_intisq_muldiv_type   = cross_to_int ? iru2isu_instr1_muldiv_type   : disp2intisq_instr0_muldiv_type;
-    assign mux_intisq_is_word       = cross_to_int ? iru2isu_instr1_is_word       : disp2intisq_instr0_is_word;
-    assign mux_intisq_is_imm        = cross_to_int ? iru2isu_instr1_is_imm        : disp2intisq_instr0_is_imm;
-    assign mux_intisq_is_load       = cross_to_int ? iru2isu_instr1_is_load       : disp2intisq_instr0_is_load;
-    assign mux_intisq_is_store      = cross_to_int ? iru2isu_instr1_is_store      : disp2intisq_instr0_is_store;
-    assign mux_intisq_ls_size       = cross_to_int ? iru2isu_instr1_ls_size       : disp2intisq_instr0_ls_size;
-    assign mux_intisq_predicttaken  = cross_to_int ? iru2isu_instr1_predicttaken   : disp2intisq_instr0_predicttaken;
-    assign mux_intisq_predicttarget = cross_to_int ? iru2isu_instr1_predicttarget  : disp2intisq_instr0_predicttarget;
-    // robid: instr1 gets robid+1 (ROB enqueues instr0 at ptr, instr1 at ptr+1)
-    assign mux_intisq_robid         = cross_to_int ? (rob2disp_instr_robid + 1)   : disp2intisq_instr0_robid;
-    assign mux_intisq_sqid          = cross_to_int ? sq2disp_sqid                 : disp2intisq_instr0_sqid;
-    assign mux_intisq_src1_state    = cross_to_int ? bt2disp_instr1_src1_busy     : disp2intisq_instr0_src1_state;
-    assign mux_intisq_src2_state    = cross_to_int ? bt2disp_instr1_src2_busy     : disp2intisq_instr0_src2_state;
-
-    // --- [2-wide] mem_isq enq data MUX ---
-    // Normal: use disp2memisq_instr0_* (instr0 data, valid when instr0 is mem)
-    // Cross:  use iru2isu_instr1_* (instr1 data, valid when instr0 is int and instr1 is load)
-    wire                          mux_memisq_enq_valid;
-    wire [             `PC_RANGE] mux_memisq_pc;
-    wire [                  31:0] mux_memisq_instr;
-    wire [           `LREG_RANGE] mux_memisq_lrs1;
-    wire [           `LREG_RANGE] mux_memisq_lrs2;
-    wire [           `LREG_RANGE] mux_memisq_lrd;
-    wire [           `PREG_RANGE] mux_memisq_prd;
-    wire [           `PREG_RANGE] mux_memisq_old_prd;
-    wire                          mux_memisq_need_to_wb;
-    wire [           `PREG_RANGE] mux_memisq_prs1;
-    wire [           `PREG_RANGE] mux_memisq_prs2;
-    wire                          mux_memisq_src1_is_reg;
-    wire                          mux_memisq_src2_is_reg;
-    wire [                  63:0] mux_memisq_imm;
-    wire [        `CX_TYPE_RANGE] mux_memisq_cx_type;
-    wire                          mux_memisq_is_unsigned;
-    wire [       `ALU_TYPE_RANGE] mux_memisq_alu_type;
-    wire [    `MULDIV_TYPE_RANGE] mux_memisq_muldiv_type;
-    wire                          mux_memisq_is_word;
-    wire                          mux_memisq_is_imm;
-    wire                          mux_memisq_is_load;
-    wire                          mux_memisq_is_store;
-    wire [                   3:0] mux_memisq_ls_size;
-    wire                          mux_memisq_predicttaken;
-    wire [             `PC_RANGE] mux_memisq_predicttarget;
-    wire [       `ROB_SIZE_LOG:0] mux_memisq_robid;
-    wire [`STOREQUEUE_SIZE_LOG:0] mux_memisq_sqid;
-    wire                          mux_memisq_src1_state;
-    wire                          mux_memisq_src2_state;
-
-    assign mux_memisq_enq_valid     = cross_to_mem ? (iru2isu_instr1_valid && iru2isu_instr1_ready && ~flush_valid)
-                                                    : disp2memisq_instr0_enq_valid;
-    assign mux_memisq_pc            = cross_to_mem ? iru2isu_instr1_pc            : disp2memisq_instr0_pc;
-    assign mux_memisq_instr         = cross_to_mem ? iru2isu_instr1_instr         : disp2memisq_instr0_instr;
-    assign mux_memisq_lrs1          = cross_to_mem ? iru2isu_instr1_lrs1          : disp2memisq_instr0_lrs1;
-    assign mux_memisq_lrs2          = cross_to_mem ? iru2isu_instr1_lrs2          : disp2memisq_instr0_lrs2;
-    assign mux_memisq_lrd           = cross_to_mem ? iru2isu_instr1_lrd           : disp2memisq_instr0_lrd;
-    assign mux_memisq_prd           = cross_to_mem ? iru2isu_instr1_prd           : disp2memisq_instr0_prd;
-    assign mux_memisq_old_prd       = cross_to_mem ? iru2isu_instr1_old_prd       : disp2memisq_instr0_old_prd;
-    assign mux_memisq_need_to_wb    = cross_to_mem ? iru2isu_instr1_need_to_wb    : disp2memisq_instr0_need_to_wb;
-    assign mux_memisq_prs1          = cross_to_mem ? iru2isu_instr1_prs1          : disp2memisq_instr0_prs1;
-    assign mux_memisq_prs2          = cross_to_mem ? iru2isu_instr1_prs2          : disp2memisq_instr0_prs2;
-    assign mux_memisq_src1_is_reg   = cross_to_mem ? iru2isu_instr1_src1_is_reg   : disp2memisq_instr0_src1_is_reg;
-    assign mux_memisq_src2_is_reg   = cross_to_mem ? iru2isu_instr1_src2_is_reg   : disp2memisq_instr0_src2_is_reg;
-    assign mux_memisq_imm           = cross_to_mem ? iru2isu_instr1_imm           : disp2memisq_instr0_imm;
-    assign mux_memisq_cx_type       = cross_to_mem ? iru2isu_instr1_cx_type       : disp2memisq_instr0_cx_type;
-    assign mux_memisq_is_unsigned   = cross_to_mem ? iru2isu_instr1_is_unsigned   : disp2memisq_instr0_is_unsigned;
-    assign mux_memisq_alu_type      = cross_to_mem ? iru2isu_instr1_alu_type      : disp2memisq_instr0_alu_type;
-    assign mux_memisq_muldiv_type   = cross_to_mem ? iru2isu_instr1_muldiv_type   : disp2memisq_instr0_muldiv_type;
-    assign mux_memisq_is_word       = cross_to_mem ? iru2isu_instr1_is_word       : disp2memisq_instr0_is_word;
-    assign mux_memisq_is_imm        = cross_to_mem ? iru2isu_instr1_is_imm        : disp2memisq_instr0_is_imm;
-    assign mux_memisq_is_load       = cross_to_mem ? iru2isu_instr1_is_load       : disp2memisq_instr0_is_load;
-    assign mux_memisq_is_store      = cross_to_mem ? iru2isu_instr1_is_store      : disp2memisq_instr0_is_store;
-    assign mux_memisq_ls_size       = cross_to_mem ? iru2isu_instr1_ls_size       : disp2memisq_instr0_ls_size;
-    assign mux_memisq_predicttaken  = cross_to_mem ? iru2isu_instr1_predicttaken   : disp2memisq_instr0_predicttaken;
-    assign mux_memisq_predicttarget = cross_to_mem ? iru2isu_instr1_predicttarget  : disp2memisq_instr0_predicttarget;
-    assign mux_memisq_robid         = cross_to_mem ? (rob2disp_instr_robid + 1)   : disp2memisq_instr0_robid;
-    assign mux_memisq_sqid          = cross_to_mem ? sq2disp_sqid                 : disp2memisq_instr0_sqid;
-    assign mux_memisq_src1_state    = cross_to_mem ? bt2disp_instr1_src1_busy     : disp2memisq_instr0_src1_state;
-    assign mux_memisq_src2_state    = cross_to_mem ? bt2disp_instr1_src2_busy     : disp2memisq_instr0_src2_state;
-
     dispatch u_dispatch (
         .clock                           (clock),
         .reset_n                         (reset_n),
@@ -541,32 +388,32 @@ module isu_top (
         .instr0_ls_size                  (iru2isu_instr0_ls_size),
         .iru2isu_instr0_predicttaken     (iru2isu_instr0_predicttaken),
         .iru2isu_instr0_predicttarget    (iru2isu_instr0_predicttarget),
-        .iru2isu_instr1_valid            (iru2isu_instr1_valid),
-        .iru2isu_instr1_ready            (iru2isu_instr1_ready),
-        .instr1_pc                       (iru2isu_instr1_pc),
-        .instr1_instr                    (iru2isu_instr1_instr),
-        .instr1_lrs1                     (iru2isu_instr1_lrs1),
-        .instr1_lrs2                     (iru2isu_instr1_lrs2),
-        .instr1_lrd                      (iru2isu_instr1_lrd),
-        .instr1_prd                      (iru2isu_instr1_prd),
-        .instr1_old_prd                  (iru2isu_instr1_old_prd),
-        .instr1_need_to_wb               (iru2isu_instr1_need_to_wb),
-        .instr1_prs1                     (iru2isu_instr1_prs1),
-        .instr1_prs2                     (iru2isu_instr1_prs2),
-        .instr1_src1_is_reg              (iru2isu_instr1_src1_is_reg),
-        .instr1_src2_is_reg              (iru2isu_instr1_src2_is_reg),
-        .instr1_imm                      (iru2isu_instr1_imm),
-        .instr1_cx_type                  (iru2isu_instr1_cx_type),
-        .instr1_is_unsigned              (iru2isu_instr1_is_unsigned),
-        .instr1_alu_type                 (iru2isu_instr1_alu_type),
-        .instr1_muldiv_type              (iru2isu_instr1_muldiv_type),
-        .instr1_is_word                  (iru2isu_instr1_is_word),
-        .instr1_is_imm                   (iru2isu_instr1_is_imm),
-        .instr1_is_load                  (iru2isu_instr1_is_load),
-        .instr1_is_store                 (iru2isu_instr1_is_store),
-        .instr1_ls_size                  (iru2isu_instr1_ls_size),
-        .iru2isu_instr1_predicttaken     (iru2isu_instr1_predicttaken),
-        .iru2isu_instr1_predicttarget    (iru2isu_instr1_predicttarget),
+        .iru2isu_instr1_valid            (),
+        .iru2isu_instr1_ready            (),
+        .instr1_pc                       (),
+        .instr1_instr                    (),
+        .instr1_lrs1                     (),
+        .instr1_lrs2                     (),
+        .instr1_lrd                      (),
+        .instr1_prd                      (),
+        .instr1_old_prd                  (),
+        .instr1_need_to_wb               (),
+        .instr1_prs1                     (),
+        .instr1_prs2                     (),
+        .instr1_src1_is_reg              (),
+        .instr1_src2_is_reg              (),
+        .instr1_imm                      (),
+        .instr1_cx_type                  (),
+        .instr1_is_unsigned              (),
+        .instr1_alu_type                 (),
+        .instr1_muldiv_type              (),
+        .instr1_is_word                  (),
+        .instr1_is_imm                   (),
+        .instr1_is_load                  (),
+        .instr1_is_store                 (),
+        .instr1_ls_size                  (),
+        .iru2isu_instr1_predicttaken     (),
+        .iru2isu_instr1_predicttarget    (),
         /* ----------------------------------- rob ---------------------------------- */
         //disp send instr0 to rob
         .disp2rob_instr0_enq_valid       (disp2rob_instr0_enq_valid),
@@ -576,13 +423,13 @@ module isu_top (
         .disp2rob_instr0_prd             (disp2rob_instr0_prd),
         .disp2rob_instr0_old_prd         (disp2rob_instr0_old_prd),
         .disp2rob_instr0_need_to_wb      (disp2rob_instr0_need_to_wb),
-        .disp2rob_instr1_enq_valid       (disp2rob_instr1_enq_valid),
-        .disp2rob_instr1_pc              (disp2rob_instr1_pc),
-        .disp2rob_instr1_instr           (disp2rob_instr1_instr),
-        .disp2rob_instr1_lrd             (disp2rob_instr1_lrd),
-        .disp2rob_instr1_prd             (disp2rob_instr1_prd),
-        .disp2rob_instr1_old_prd         (disp2rob_instr1_old_prd),
-        .disp2rob_instr1_need_to_wb      (disp2rob_instr1_need_to_wb),
+        .disp2rob_instr1_enq_valid       (),
+        .disp2rob_instr1_pc              (),
+        .disp2rob_instr1_instr           (),
+        .disp2rob_instr1_lrd             (),
+        .disp2rob_instr1_prd             (),
+        .disp2rob_instr1_old_prd         (),
+        .disp2rob_instr1_need_to_wb      (),
         /* ---------------------------- to int issuequeue --------------------------- */
         .disp2intisq_instr0_enq_valid    (disp2intisq_instr0_enq_valid),
         .disp2intisq_instr0_pc           (disp2intisq_instr0_pc),
@@ -656,17 +503,17 @@ module isu_top (
         .disp2bt_instr0_rs2              (disp2bt_instr0_rs2),
         .disp2bt_instr0_src2_is_reg      (disp2bt_instr0_src2_is_reg),
         .bt2disp_instr0_src2_busy        (bt2disp_instr0_src2_busy),
-        .disp2bt_instr1_rs1              (disp2bt_instr1_rs1),
-        .disp2bt_instr1_src1_is_reg      (disp2bt_instr1_src1_is_reg),
-        .bt2disp_instr1_src1_busy        (bt2disp_instr1_src1_busy),
-        .disp2bt_instr1_rs2              (disp2bt_instr1_rs2),
-        .disp2bt_instr1_src2_is_reg      (disp2bt_instr1_src2_is_reg),
-        .bt2disp_instr1_src2_busy        (bt2disp_instr1_src2_busy),
+        .disp2bt_instr1_rs1              (),
+        .disp2bt_instr1_src1_is_reg      (),
+        .bt2disp_instr1_src1_busy        (),
+        .disp2bt_instr1_rs2              (),
+        .disp2bt_instr1_src2_is_reg      (),
+        .bt2disp_instr1_src2_busy        (),
         //disp write rd as busy in busy_table
         .disp2bt_alloc_instr0_rd_en      (disp2bt_alloc_instr0_rd_en),
         .disp2bt_alloc_instr0_rd         (disp2bt_alloc_instr0_rd),
-        .disp2bt_alloc_instr1_rd_en      (disp2bt_alloc_instr1_rd_en),
-        .disp2bt_alloc_instr1_rd         (disp2bt_alloc_instr1_rd),
+        .disp2bt_alloc_instr1_rd_en      (),
+        .disp2bt_alloc_instr1_rd         (),
         //flush signal
         .flush_valid                     (flush_valid)
     );
@@ -683,13 +530,13 @@ module isu_top (
         .instr0_prd       (disp2rob_instr0_prd),
         .instr0_old_prd   (disp2rob_instr0_old_prd),
         .instr0_need_to_wb(disp2rob_instr0_need_to_wb),
-        .instr1_enq_valid (disp2rob_instr1_enq_valid),
-        .instr1_pc        (disp2rob_instr1_pc),
-        .instr1_instr     (disp2rob_instr1_instr),
-        .instr1_lrd       (disp2rob_instr1_lrd),
-        .instr1_prd       (disp2rob_instr1_prd),
-        .instr1_old_prd   (disp2rob_instr1_old_prd),
-        .instr1_need_to_wb(disp2rob_instr1_need_to_wb),
+        .instr1_enq_valid (),
+        .instr1_pc        (),
+        .instr1_instr     (),
+        .instr1_lrd       (),
+        .instr1_prd       (),
+        .instr1_old_prd   (),
+        .instr1_need_to_wb(),
 
         //write back signals
         .intwb0_instr_valid(intwb0_instr_valid),
@@ -710,15 +557,15 @@ module isu_top (
         .commit0_need_to_wb  (commit0_need_to_wb),
         .commit0_robid       (commit0_robid),
         .commit0_skip        (commit0_skip),
-        .commit1_valid       (commit1_valid),
-        .commit1_pc          (commit1_pc),
-        .commit1_instr       (commit1_instr),
-        .commit1_lrd         (commit1_lrd),
-        .commit1_prd         (commit1_prd),
-        .commit1_old_prd     (commit1_old_prd),
-        .commit1_robid       (commit1_robid),
-        .commit1_need_to_wb  (commit1_need_to_wb),
-        .commit1_skip        (commit1_skip),
+        .commit1_valid       (),
+        .commit1_pc          (),
+        .commit1_instr       (),
+        .commit1_lrd         (),
+        .commit1_prd         (),
+        .commit1_old_prd     (),
+        .commit1_robid       (),
+        .commit1_need_to_wb  (),
+        .commit1_skip        (),
         //walking logic
         .rob_state           (rob_state),
         .rob_walk0_valid     (rob_walk0_valid),
@@ -745,35 +592,35 @@ module isu_top (
         .reset_n                       (reset_n),
         .iq_can_alloc0                 (iq_can_alloc0),
         .all_iq_ready                  (1'b1),
-        .enq_instr0_valid              (mux_intisq_enq_valid),
-        .enq_instr0_lrs1               (mux_intisq_lrs1),
-        .enq_instr0_lrs2               (mux_intisq_lrs2),
-        .enq_instr0_lrd                (mux_intisq_lrd),
-        .enq_instr0_pc                 (mux_intisq_pc),
-        .enq_instr0                    (mux_intisq_instr),
-        .enq_instr0_imm                (mux_intisq_imm),
-        .enq_instr0_src1_is_reg        (mux_intisq_src1_is_reg),
-        .enq_instr0_src2_is_reg        (mux_intisq_src2_is_reg),
-        .enq_instr0_need_to_wb         (mux_intisq_need_to_wb),
-        .enq_instr0_cx_type            (mux_intisq_cx_type),
-        .enq_instr0_is_unsigned        (mux_intisq_is_unsigned),
-        .enq_instr0_alu_type           (mux_intisq_alu_type),
-        .enq_instr0_muldiv_type        (mux_intisq_muldiv_type),
-        .enq_instr0_is_word            (mux_intisq_is_word),
-        .enq_instr0_is_imm             (mux_intisq_is_imm),
-        .enq_instr0_is_load            (mux_intisq_is_load),
-        .enq_instr0_is_store           (mux_intisq_is_store),
-        .enq_instr0_ls_size            (mux_intisq_ls_size),
-        .enq_instr0_prs1               (mux_intisq_prs1),
-        .enq_instr0_prs2               (mux_intisq_prs2),
-        .enq_instr0_prd                (mux_intisq_prd),
-        .enq_instr0_old_prd            (mux_intisq_old_prd),
-        .enq_instr0_predicttaken       (mux_intisq_predicttaken),
-        .enq_instr0_predicttarget      (mux_intisq_predicttarget),
-        .enq_instr0_robid              (mux_intisq_robid),
-        .enq_instr0_sqid               (mux_intisq_sqid),
-        .enq_instr0_src1_state         (mux_intisq_src1_state),
-        .enq_instr0_src2_state         (mux_intisq_src2_state),
+        .enq_instr0_valid              (disp2intisq_instr0_enq_valid),
+        .enq_instr0_lrs1               (disp2intisq_instr0_lrs1),
+        .enq_instr0_lrs2               (disp2intisq_instr0_lrs2),
+        .enq_instr0_lrd                (disp2intisq_instr0_lrd),
+        .enq_instr0_pc                 (disp2intisq_instr0_pc),
+        .enq_instr0                    (disp2intisq_instr0_instr),
+        .enq_instr0_imm                (disp2intisq_instr0_imm),
+        .enq_instr0_src1_is_reg        (disp2intisq_instr0_src1_is_reg),
+        .enq_instr0_src2_is_reg        (disp2intisq_instr0_src2_is_reg),
+        .enq_instr0_need_to_wb         (disp2intisq_instr0_need_to_wb),
+        .enq_instr0_cx_type            (disp2intisq_instr0_cx_type),
+        .enq_instr0_is_unsigned        (disp2intisq_instr0_is_unsigned),
+        .enq_instr0_alu_type           (disp2intisq_instr0_alu_type),
+        .enq_instr0_muldiv_type        (disp2intisq_instr0_muldiv_type),
+        .enq_instr0_is_word            (disp2intisq_instr0_is_word),
+        .enq_instr0_is_imm             (disp2intisq_instr0_is_imm),
+        .enq_instr0_is_load            (disp2intisq_instr0_is_load),
+        .enq_instr0_is_store           (disp2intisq_instr0_is_store),
+        .enq_instr0_ls_size            (disp2intisq_instr0_ls_size),
+        .enq_instr0_prs1               (disp2intisq_instr0_prs1),
+        .enq_instr0_prs2               (disp2intisq_instr0_prs2),
+        .enq_instr0_prd                (disp2intisq_instr0_prd),
+        .enq_instr0_old_prd            (disp2intisq_instr0_old_prd),
+        .enq_instr0_predicttaken       (disp2intisq_instr0_predicttaken),
+        .enq_instr0_predicttarget      (disp2intisq_instr0_predicttarget),
+        .enq_instr0_robid              (disp2intisq_instr0_robid),
+        .enq_instr0_sqid               (disp2intisq_instr0_sqid),
+        .enq_instr0_src1_state         (disp2intisq_instr0_src1_state),
+        .enq_instr0_src2_state         (disp2intisq_instr0_src2_state),
         .issue0_valid                  (issue0_valid),
         .issue0_ready                  (issue0_ready),
         .issue0_prs1                   (issue0_prs1),
@@ -821,35 +668,35 @@ module isu_top (
         .reset_n                       (reset_n),
         .iq_can_alloc0                 (iq_can_alloc1),
         .all_iq_ready                  (1'b1),
-        .enq_instr0_valid              (mux_memisq_enq_valid),
-        .enq_instr0_lrs1               (mux_memisq_lrs1),
-        .enq_instr0_lrs2               (mux_memisq_lrs2),
-        .enq_instr0_lrd                (mux_memisq_lrd),
-        .enq_instr0_pc                 (mux_memisq_pc),
-        .enq_instr0                    (mux_memisq_instr),
-        .enq_instr0_imm                (mux_memisq_imm),
-        .enq_instr0_src1_is_reg        (mux_memisq_src1_is_reg),
-        .enq_instr0_src2_is_reg        (mux_memisq_src2_is_reg),
-        .enq_instr0_need_to_wb         (mux_memisq_need_to_wb),
-        .enq_instr0_cx_type            (mux_memisq_cx_type),
-        .enq_instr0_is_unsigned        (mux_memisq_is_unsigned),
-        .enq_instr0_alu_type           (mux_memisq_alu_type),
-        .enq_instr0_muldiv_type        (mux_memisq_muldiv_type),
-        .enq_instr0_is_word            (mux_memisq_is_word),
-        .enq_instr0_is_imm             (mux_memisq_is_imm),
-        .enq_instr0_is_load            (mux_memisq_is_load),
-        .enq_instr0_is_store           (mux_memisq_is_store),
-        .enq_instr0_ls_size            (mux_memisq_ls_size),
-        .enq_instr0_prs1               (mux_memisq_prs1),
-        .enq_instr0_prs2               (mux_memisq_prs2),
-        .enq_instr0_prd                (mux_memisq_prd),
-        .enq_instr0_old_prd            (mux_memisq_old_prd),
-        .enq_instr0_predicttaken       (mux_memisq_predicttaken),
-        .enq_instr0_predicttarget      (mux_memisq_predicttarget),
-        .enq_instr0_robid              (mux_memisq_robid),
-        .enq_instr0_sqid               (mux_memisq_sqid),
-        .enq_instr0_src1_state         (mux_memisq_src1_state),
-        .enq_instr0_src2_state         (mux_memisq_src2_state),
+        .enq_instr0_valid              (disp2memisq_instr0_enq_valid),
+        .enq_instr0_lrs1               (disp2memisq_instr0_lrs1),
+        .enq_instr0_lrs2               (disp2memisq_instr0_lrs2),
+        .enq_instr0_lrd                (disp2memisq_instr0_lrd),
+        .enq_instr0_pc                 (disp2memisq_instr0_pc),
+        .enq_instr0                    (disp2memisq_instr0_instr),
+        .enq_instr0_imm                (disp2memisq_instr0_imm),
+        .enq_instr0_src1_is_reg        (disp2memisq_instr0_src1_is_reg),
+        .enq_instr0_src2_is_reg        (disp2memisq_instr0_src2_is_reg),
+        .enq_instr0_need_to_wb         (disp2memisq_instr0_need_to_wb),
+        .enq_instr0_cx_type            (disp2memisq_instr0_cx_type),
+        .enq_instr0_is_unsigned        (disp2memisq_instr0_is_unsigned),
+        .enq_instr0_alu_type           (disp2memisq_instr0_alu_type),
+        .enq_instr0_muldiv_type        (disp2memisq_instr0_muldiv_type),
+        .enq_instr0_is_word            (disp2memisq_instr0_is_word),
+        .enq_instr0_is_imm             (disp2memisq_instr0_is_imm),
+        .enq_instr0_is_load            (disp2memisq_instr0_is_load),
+        .enq_instr0_is_store           (disp2memisq_instr0_is_store),
+        .enq_instr0_ls_size            (disp2memisq_instr0_ls_size),
+        .enq_instr0_prs1               (disp2memisq_instr0_prs1),
+        .enq_instr0_prs2               (disp2memisq_instr0_prs2),
+        .enq_instr0_prd                (disp2memisq_instr0_prd),
+        .enq_instr0_old_prd            (disp2memisq_instr0_old_prd),
+        .enq_instr0_predicttaken       (disp2memisq_instr0_predicttaken),
+        .enq_instr0_predicttarget      (disp2memisq_instr0_predicttarget),
+        .enq_instr0_robid              (disp2memisq_instr0_robid),
+        .enq_instr0_sqid               (disp2memisq_instr0_sqid),
+        .enq_instr0_src1_state         (disp2memisq_instr0_src1_state),
+        .enq_instr0_src2_state         (disp2memisq_instr0_src2_state),
         .issue0_valid                  (issue1_valid),
         .issue0_ready                  (issue1_ready),
         .issue0_prs1                   (issue1_prs1),
@@ -928,14 +775,14 @@ module isu_top (
         //disp write rd ad busy port
         .disp2bt_alloc_instr0_rd_en (disp2bt_alloc_instr0_rd_en),
         .disp2bt_alloc_instr0_rd    (disp2bt_alloc_instr0_rd),
-        .disp2bt_instr1_rs1         (disp2bt_instr1_rs1),
-        .disp2bt_instr1_src1_is_reg (disp2bt_instr1_src1_is_reg),
-        .bt2disp_instr1_src1_busy   (bt2disp_instr1_src1_busy),
-        .disp2bt_instr1_rs2         (disp2bt_instr1_rs2),
-        .disp2bt_instr1_src2_is_reg (disp2bt_instr1_src2_is_reg),
-        .bt2disp_instr1_src2_busy   (bt2disp_instr1_src2_busy),
-        .disp2bt_alloc_instr1_rd_en (disp2bt_alloc_instr1_rd_en),
-        .disp2bt_alloc_instr1_rd    (disp2bt_alloc_instr1_rd),
+        .disp2bt_instr1_rs1         (),
+        .disp2bt_instr1_src1_is_reg (),
+        .bt2disp_instr1_src1_busy   (),
+        .disp2bt_instr1_rs2         (),
+        .disp2bt_instr1_src2_is_reg (),
+        .bt2disp_instr1_src2_busy   (),
+        .disp2bt_alloc_instr1_rd_en (),
+        .disp2bt_alloc_instr1_rd    (),
         //writeback free busy_table
         .intwb02bt_free_instr0_rd_en(intwb0_instr_valid & intwb0_need_to_wb),
         .intwb02bt_free_instr0_rd   (intwb0_prd),
@@ -1097,7 +944,7 @@ module isu_top (
     DifftestTrapEvent u_DifftestTrapEvent (
         .clock      (clock),
         .enable     (1'b1),
-        .io_hasTrap (1'b0),
+        .io_hasTrap (end_of_program),
         .io_cycleCnt(cycle_cnt),
         .io_instrCnt(commit_cnt),
         .io_hasWFI  ('b0),

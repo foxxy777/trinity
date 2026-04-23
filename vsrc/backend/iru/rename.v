@@ -158,10 +158,7 @@ module rename (
 );
 
     assign instr0_ready = rn2pipe_instr0_ready & freelist_can_alloc;
-    // --- [2-wide] instr1_ready：取消注释，加上正确条件 ---
-    // 原来被注释掉，导致 instr1_ready 无驱动源
-    // 保序：instr1 依赖 instr0 也 ready + freelist 有空间
-    assign instr1_ready = pipe2rn_instr1_ready & freelist_can_alloc;
+    //assign instr1_ready = pipe2rn_instr1_ready;
 
     /* --------------------------- determine if 6 reg is valid or not -------------------------- */
     wire instr0_lrs1_valid = instr0_valid & instr0_src1_is_reg;
@@ -223,9 +220,7 @@ module rename (
     //handshake means rename need to fetch 2 free physical reg number from freelist
     //when flush, no need to fetch
     assign rn2fl_instr0_lrd_valid       = instr0_lrd_valid && rn2pipe_instr0_ready && ~flush_valid;
-    // --- [2-wide] rn2fl_instr1_lrd_valid 加上 ready 条件 ---
-    // 原来：无条件分配 freelist，即使下游不 ready 也会消耗
-    assign rn2fl_instr1_lrd_valid       = instr1_lrd_valid && pipe2rn_instr1_ready && ~flush_valid;
+    assign rn2fl_instr1_lrd_valid       = instr1_lrd_valid && ~flush_valid;  //&& pipe2rn_instr1_ready;//issue queue accept instr1 abililty due to implement future
 
 
 
@@ -254,9 +249,7 @@ module rename (
     assign rn2specrat_instr0_lrd_wraddr = instr0_lrd;
     assign rn2specrat_instr0_lrd_wrdata = fl2rn_instr0prd;
 
-    // --- [2-wide] rn2specrat_instr1_lrd_wren 加上 ready + alloc 条件 ---
-    // 原来：无条件写 spec_rat，即使 freelist 没空间也会写错误映射
-    assign rn2specrat_instr1_lrd_wren   = instr1_lrd_valid && pipe2rn_instr1_ready && freelist_can_alloc;
+    assign rn2specrat_instr1_lrd_wren   = instr1_lrd_valid;
     assign rn2specrat_instr1_lrd_wraddr = instr1_lrd;
     assign rn2specrat_instr1_lrd_wrdata = fl2rn_instr1prd;
 
@@ -289,9 +282,7 @@ module rename (
 
 
 
-    // --- [2-wide] rn2pipe_instr1_valid 加上 alloc + flush 条件 ---
-    // 原来：无条件传 valid，freelist 空间不足时也会传递
-    assign rn2pipe_instr1_valid         = instr1_valid & freelist_can_alloc & ~flush_valid;
+    assign rn2pipe_instr1_valid         = instr1_valid;
     assign rn2pipe_instr1_lrs1          = instr1_lrs1;
     assign rn2pipe_instr1_lrs2          = instr1_lrs2;
     assign rn2pipe_instr1_lrd           = instr1_lrd;

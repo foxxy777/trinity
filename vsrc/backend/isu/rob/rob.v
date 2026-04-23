@@ -108,6 +108,9 @@ module rob (
     reg  [`ROB_SIZE_LOG:0] enq_num;
     reg  [`ROB_SIZE_LOG:0] deq_num;
 
+    // End-of-program flag: latch when EBREAK is committed, block further commits
+    reg eop_flag;
+
 
 
     /* ------------------------ update enqueue_ptr logic ------------------------ */
@@ -264,7 +267,7 @@ module rob (
             commit_vld_dec[i] = 'b0;
             if (~is_idle || flush_valid) begin
                 commit_vld_dec = 'b0;
-            end else if (entry_ready_to_commit_dec[i] & (dequeue_ptr[`ROB_SIZE_LOG-1:0] == i[`ROB_SIZE_LOG-1:0])) begin
+            end else if (entry_ready_to_commit_dec[i] & (dequeue_ptr[`ROB_SIZE_LOG-1:0] == i[`ROB_SIZE_LOG-1:0]) & ~eop_flag) begin
                 commit_vld_dec[i] = 1'b1;
             end
         end
@@ -286,6 +289,15 @@ module rob (
             dequeue_ptr <= 0;
         end else begin
             dequeue_ptr <= dequeue_ptr + deq_num;
+        end
+    end
+
+    // Latch end_of_program flag: once EBREAK commits, no more commits allowed
+    always @(posedge clock or negedge reset_n) begin
+        if (~reset_n) begin
+            eop_flag <= 1'b0;
+        end else if (end_of_program) begin
+            eop_flag <= 1'b1;
         end
     end
 
